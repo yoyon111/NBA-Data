@@ -560,6 +560,46 @@
         </article>
       </div>
     </section>
+
+    <section id="ai-analysis-section" class="matchup-section hidden">
+      <div class="matchup-heading-row">
+        <div class="matchup-title">
+          <span>🤖 AI Matchup Analysis</span>
+          <span class="matchup-pill">Powered by Gemini</span>
+        </div>
+        <div class="context-label">
+          Step 3 · Get intelligent insights
+        </div>
+      </div>
+
+      <div class="matchup-controls">
+        <div class="matchup-controls-label">
+          Get AI-powered analysis of this matchup
+        </div>
+        <button class="button-primary" id="ai-analyze-btn" style="width: 100%;">
+          <span class="icon">✨</span>
+          <span>Analyze Matchup with AI</span>
+        </button>
+      </div>
+
+      <article class="card" id="ai-response-card" style="display: none;">
+        <div class="card-header">
+          <div>
+            <div class="card-title">AI Analysis</div>
+            <div class="card-subtitle" id="ai-subtitle">
+              Analysis in progress...
+            </div>
+          </div>
+          <span class="pill">Gemini</span>
+        </div>
+        <div id="ai-response-content" style="color: var(--text-main); line-height: 1.6; font-size: 0.88rem;">
+          <div style="text-align: center; padding: 2rem;">
+            <div style="font-size: 2rem; margin-bottom: 0.5rem;">⏳</div>
+            <div>Analyzing matchup...</div>
+          </div>
+        </div>
+      </article>
+    </section>
   </div>
 
   <script>
@@ -582,8 +622,16 @@
     const teamStatusText = document.getElementById("team-status-text");
     const defenseTbody = document.getElementById("defense-tbody");
 
+    const aiAnalysisSection = document.getElementById("ai-analysis-section");
+    const aiAnalyzeBtn = document.getElementById("ai-analyze-btn");
+    const aiResponseCard = document.getElementById("ai-response-card");
+    const aiResponseContent = document.getElementById("ai-response-content");
+    const aiSubtitle = document.getElementById("ai-subtitle");
+
     let currentPlayerName = "";
     let currentPlayerData = null;
+    let currentTeamName = "";
+    let currentDefenseData = null;
 
     const playTypeMapping = {
       "Isolation": "iso",
@@ -692,6 +740,13 @@
         const data = await response.json();
         displayDefenseData(data.data);
         
+        currentTeamName = data.team;
+        currentDefenseData = data.data;
+        
+        // Show AI analysis section
+        aiAnalysisSection.classList.remove("hidden");
+        aiResponseCard.style.display = "none";
+        
         teamStatusText.textContent = `Loaded ${data.team} defense`;
         setTimeout(() => teamStatusText.classList.remove("visible"), 2000);
 
@@ -718,6 +773,82 @@
         </tr>
       `).join('');
     }
+
+    // AI Analysis functionality with Gemini
+    aiAnalyzeBtn.addEventListener("click", async () => {
+      if (!currentPlayerName || !currentTeamName) {
+        return;
+      }
+
+      aiAnalyzeBtn.disabled = true;
+      aiResponseCard.style.display = "block";
+      aiSubtitle.textContent = "Searching the web and analyzing...";
+      aiResponseContent.innerHTML = `
+        <div style="text-align: center; padding: 2rem;">
+          <div style="font-size: 2rem; margin-bottom: 0.5rem;">🔍</div>
+          <div>Gemini is searching the web for latest info...</div>
+          <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.5rem;">This may take 10-15 seconds</div>
+        </div>
+      `;
+
+      try {
+        const response = await fetch(`${API_URL}/ai-analysis`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            playerName: currentPlayerName,
+            teamName: currentTeamName,
+            playerStats: currentPlayerData,
+            defenseStats: currentDefenseData
+          })
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || "AI analysis failed");
+        }
+
+        const data = await response.json();
+        const analysisText = data.analysis;
+
+        // Format the response with better styling
+        const formattedAnalysis = analysisText
+          .split('\n')
+          .map(line => {
+            line = line.trim();
+            if (!line) return '<div style="height: 0.5rem;"></div>';
+            
+            // Check if line is a header (starts with number, **, or ###)
+            if (/^\d+\./.test(line) || /^\*\*.*\*\*/.test(line) || /^###/.test(line)) {
+              const cleanLine = line.replace(/\*\*/g, '').replace(/^###\s*/, '');
+              return `<div style="font-weight: 600; color: var(--accent); margin-top: 1rem; margin-bottom: 0.5rem;">${cleanLine}</div>`;
+            }
+            
+            // Bold text within lines
+            line = line.replace(/\*\*(.*?)\*\*/g, '<strong style="color: var(--accent);">$1</strong>');
+            
+            return `<p style="margin-bottom: 0.75rem; line-height: 1.6;">${line}</p>`;
+          })
+          .join('');
+
+        aiResponseContent.innerHTML = formattedAnalysis;
+        aiSubtitle.textContent = `${currentPlayerName} vs ${currentTeamName} • Powered by Gemini + Web Search`;
+
+      } catch (err) {
+        aiResponseContent.innerHTML = `
+          <div style="text-align: center; padding: 2rem; color: var(--error);">
+            <div style="font-size: 2rem; margin-bottom: 0.5rem;">⚠️</div>
+            <div>Analysis failed. Please try again.</div>
+            <div style="font-size: 0.75rem; margin-top: 0.5rem; color: var(--text-muted);">${err.message}</div>
+          </div>
+        `;
+        aiSubtitle.textContent = "Analysis failed";
+      } finally {
+        aiAnalyzeBtn.disabled = false;
+      }
+    });
   </script>
 </body>
 </html>
