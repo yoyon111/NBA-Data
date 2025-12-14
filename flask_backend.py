@@ -2,10 +2,16 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 import threading
 import time
+import os
+import google.generativeai as genai
 from playerstyles1 import get_offensive_stats, get_defensive_stats, normalize_text
 
 app = Flask(__name__)
 CORS(app)
+
+# Configure Gemini API
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', 'YOUR_API_KEY_HERE')
+genai.configure(api_key=GEMINI_API_KEY)
 
 # Cache storage
 offensive_cache = {}
@@ -150,6 +156,88 @@ def get_matchup(player_name, team_name):
         "player": player_json,
         "defense": defense_json
     })
+
+@app.route('/api/ai-analysis', methods=['POST'])
+def ai_analysis():
+    """Gemini AI analysis with web search"""
+    try:
+        data = request.json
+        player_name = data.get('playerName')
+        team_name = data.get('teamName')
+        player_stats = data.get('playerStats', [])
+        defense_stats = data.get('defenseStats', [])
+        
+        if not player_name or not team_name:
+            return jsonify({"error": "Missing player or team name"}), 400
+        
+        # Format stats for the prompt
+        player_stats_text = ', '.join([
+            f"{s['playType']}: {s['pts']:.1f} PTS" 
+            for s in sorted(player_stats, key=lambda x: x['pts'], reverse=True)
+        ])
+        
+        defense_stats_text = ', '.join([
+            f"{s['playType']}: Rank #{s['rank']} ({s['ppp']:.2f} PPP)" 
+            for s in sorted(defense_stats, key=lambda x: x['rank'])
+        ])
+        
+        prompt = f"""You are an NBA analyst with access to current information. Analyze this matchup using both the provided stats AND current information from web searches about the player's recent performance and the team's defensive strategies.
+
+Player: {player_name}
+Offensive Stats by Play Type: {player_stats_text}
+
+Opponent: {team_name}
+Defensive Stats by Play Type: {defense_stats_text}
+
+Search for recent information about:
+1. {player_name}'s current playing style, recent performance, injuries, or hot streaks
+2. {team_name}'s defensive strategies, recent defensive performance, and key defenders
+3. Any recent head-to-head matchups between {player_name} and {team_name}
+
+Based on the stats above AND your web research, provide:
+1. Player's strongest offensive play types and how they've been performing recently
+2. Team's defensive weaknesses and recent defensive trends
+3. Specific matchup advantages where player's strengths align with defensive weaknesses
+4. 2-3 tactical betting insights or predictions for this matchup
+5. Any concerns or areas where the defense might contain the player
+
+Keep analysis concise but insightful (250-350 words). Cite any recent stats or news you find."""
+
+        # Try with retry logic for quota limits
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                # Use Gemini 2.5 Flash model (updated from 2.0)
+                model = genai.GenerativeModel('gemini-2.5-flash')
+                
+                response = model.generate_content(prompt)
+                
+                return jsonify({
+                    "analysis": response.text,
+                    "player": player_name,
+                    "team": team_name
+                })
+            except Exception as quota_error:
+                error_str = str(quota_error)
+                if 'quota' in error_str.lower() or '429' in error_str:
+                    if attempt < max_retries - 1:
+                        print(f"Quota exceeded, waiting 5 seconds before retry {attempt + 1}...")
+                        time.sleep(5)
+                        continue
+                    else:
+                        return jsonify({
+                            "error": "Rate limit exceeded. Please wait a minute and try again. The free tier has limited requests per minute."
+                        }), 429
+                raise
+        
+    except Exception as e:
+        print(f"AI Analysis error: {e}")
+        error_message = str(e)
+        if 'quota' in error_message.lower() or '429' in error_message:
+            return jsonify({
+                "error": "Rate limit exceeded. Please wait a minute and try again."
+            }), 429
+        return jsonify({"error": error_message}), 500
 
 @app.route('/api/refresh', methods=['POST'])
 def manual_refresh():
