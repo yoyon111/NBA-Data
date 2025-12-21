@@ -157,9 +157,28 @@ def get_matchup(player_name, team_name):
         "defense": defense_json
     })
 
+def call_gemini_with_retry(prompt, max_retries=2):
+    """Helper function to call Gemini with retry logic"""
+    for attempt in range(max_retries):
+        try:
+            model = genai.GenerativeModel('gemini-2.5-flash')
+            response = model.generate_content(prompt)
+            return response.text
+        except Exception as error:
+            error_str = str(error)
+            if 'quota' in error_str.lower() or '429' in error_str:
+                if attempt < max_retries - 1:
+                    print(f"Quota exceeded, waiting 5 seconds before retry {attempt + 1}...")
+                    time.sleep(5)
+                    continue
+                else:
+                    raise Exception("Rate limit exceeded. Please wait a minute and try again.")
+            raise
+    return None
+
 @app.route('/api/ai-analysis', methods=['POST'])
 def ai_analysis():
-    """Gemini AI analysis with web search"""
+    """Multi-perspective AI analysis with 4 analysts"""
     try:
         data = request.json
         player_name = data.get('playerName')
@@ -170,7 +189,7 @@ def ai_analysis():
         if not player_name or not team_name:
             return jsonify({"error": "Missing player or team name"}), 400
         
-        # Format stats for the prompt
+        # Format stats for the prompts
         player_stats_text = ', '.join([
             f"{s['playType']}: {s['pts']:.1f} PTS" 
             for s in sorted(player_stats, key=lambda x: x['pts'], reverse=True)
@@ -181,9 +200,8 @@ def ai_analysis():
             for s in sorted(defense_stats, key=lambda x: x['rank'])
         ])
         
-        prompt = f"""You are an NBA analyst with access to current information. Analyze this matchup using both the provided stats AND current information from web searches about the player's recent performance and the team's defensive strategies.
-
-Player: {player_name}
+        # Base context for all analysts
+        base_context = f"""Player: {player_name}
 Offensive Stats by Play Type: {player_stats_text}
 
 Opponent: {team_name}
@@ -192,43 +210,119 @@ Defensive Stats by Play Type: {defense_stats_text}
 Search for recent information about:
 1. {player_name}'s current playing style, recent performance, injuries, or hot streaks
 2. {team_name}'s defensive strategies, recent defensive performance, and key defenders
-3. Any recent head-to-head matchups between {player_name} and {team_name}
+3. Any recent head-to-head matchups between {player_name} and {team_name}"""
 
-Based on the stats above AND your web research, provide:
-1. Player's strongest offensive play types and how they've been performing recently
-2. Team's defensive weaknesses and recent defensive trends
-3. Specific matchup advantages where player's strengths align with defensive weaknesses
-4. 2-3 tactical betting insights or predictions for this matchup
-5. Any concerns or areas where the defense might contain the player
+        # Analyst 1: Player-Optimistic
+        prompt_optimistic_player = f"""You are an NBA analyst who tends to be OPTIMISTIC about the PLAYER's chances. You believe in players' abilities to overcome defensive challenges.
 
-Keep analysis concise but insightful (250-350 words). Cite any recent stats or news you find."""
+{base_context}
 
-        # Try with retry logic for quota limits
-        max_retries = 2
-        for attempt in range(max_retries):
-            try:
-                # Use Gemini 2.5 Flash model (updated from 2.0)
-                model = genai.GenerativeModel('gemini-2.5-flash')
-                
-                response = model.generate_content(prompt)
-                
-                return jsonify({
-                    "analysis": response.text,
-                    "player": player_name,
-                    "team": team_name
-                })
-            except Exception as quota_error:
-                error_str = str(quota_error)
-                if 'quota' in error_str.lower() or '429' in error_str:
-                    if attempt < max_retries - 1:
-                        print(f"Quota exceeded, waiting 5 seconds before retry {attempt + 1}...")
-                        time.sleep(5)
-                        continue
-                    else:
-                        return jsonify({
-                            "error": "Rate limit exceeded. Please wait a minute and try again. The free tier has limited requests per minute."
-                        }), 429
-                raise
+Analyze this matchup with a slightly optimistic view toward {player_name}. Focus on:
+- Why {player_name}'s strengths can exploit the defense
+- Recent hot streaks or momentum
+- Favorable matchup advantages
+- Why betting on the player's props might be smart
+
+Keep it concise (150-200 words). Be realistic but lean positive for the player."""
+
+        # Analyst 2: Team-Optimistic (Defense-focused)
+        prompt_optimistic_defense = f"""You are an NBA analyst who tends to be OPTIMISTIC about the DEFENSE's ability to contain offensive players. You respect strong defensive schemes.
+
+{base_context}
+
+Analyze this matchup with a slightly optimistic view toward {team_name}'s defense. Focus on:
+- How {team_name}'s defensive strengths can limit {player_name}
+- Recent defensive improvements or strategies
+- Specific defenders who can contain the player
+- Why the defense might hold the player under projections
+
+Keep it concise (150-200 words). Be realistic but lean positive for the defense."""
+
+        # Analyst 3: Neutral
+        prompt_neutral = f"""You are a NEUTRAL NBA analyst who provides balanced, objective analysis without bias toward either side.
+
+{base_context}
+
+Provide a balanced analysis of this matchup. Focus on:
+- Objective assessment of player strengths vs defensive weaknesses
+- Key factors that could swing either way
+- Statistical probabilities based on the data
+- Balanced betting perspective
+
+Keep it concise (150-200 words). Be completely objective and balanced."""
+
+        print(f"Starting multi-analyst analysis for {player_name} vs {team_name}...")
+        
+        # Call all three analysts
+        print("Analyst 1 (Player-Optimistic): Analyzing...")
+        analysis_player_opt = call_gemini_with_retry(prompt_optimistic_player)
+        
+        print("Analyst 2 (Defense-Optimistic): Analyzing...")
+        analysis_defense_opt = call_gemini_with_retry(prompt_optimistic_defense)
+        
+        print("Analyst 3 (Neutral): Analyzing...")
+        analysis_neutral = call_gemini_with_retry(prompt_neutral)
+        
+        # Analyst 4: Synthesizer (reads all three analyses)
+        prompt_synthesizer = f"""You are the HEAD ANALYST who reviews multiple perspectives and provides the FINAL CONCLUSION.
+
+MATCHUP: {player_name} vs {team_name}
+
+ANALYST 1 (Player-Optimistic View):
+{analysis_player_opt}
+
+ANALYST 2 (Defense-Optimistic View):
+{analysis_defense_opt}
+
+ANALYST 3 (Neutral View):
+{analysis_neutral}
+
+Your job: Read all three analyses above and synthesize them into a FINAL CONCLUSION (200-250 words).
+
+Include:
+1. Which analyst made the strongest points
+2. Where the analysts agree/disagree
+3. Your final verdict on the most likely outcome
+4. 2-3 specific betting recommendations based on weighing all perspectives
+5. Confidence level (High/Medium/Low) with reasoning
+
+Be decisive but acknowledge uncertainty where it exists."""
+
+        print("Analyst 4 (Synthesizer): Creating final conclusion...")
+        analysis_synthesizer = call_gemini_with_retry(prompt_synthesizer)
+        
+        # Format the complete response
+        complete_analysis = f"""🔵 ANALYST 1: PLAYER-OPTIMISTIC PERSPECTIVE
+{analysis_player_opt}
+
+---
+
+🔴 ANALYST 2: DEFENSE-OPTIMISTIC PERSPECTIVE
+{analysis_defense_opt}
+
+---
+
+⚪ ANALYST 3: NEUTRAL PERSPECTIVE
+{analysis_neutral}
+
+---
+
+🎯 FINAL CONCLUSION (HEAD ANALYST)
+{analysis_synthesizer}"""
+        
+        print("Analysis complete!")
+        
+        return jsonify({
+            "analysis": complete_analysis,
+            "player": player_name,
+            "team": team_name,
+            "perspectives": {
+                "player_optimistic": analysis_player_opt,
+                "defense_optimistic": analysis_defense_opt,
+                "neutral": analysis_neutral,
+                "final_conclusion": analysis_synthesizer
+            }
+        })
         
     except Exception as e:
         print(f"AI Analysis error: {e}")
